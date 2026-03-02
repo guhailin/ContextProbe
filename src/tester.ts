@@ -8,6 +8,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { Config, TestResult, TestProgress } from './types.js';
 import { TokenCounter } from './token-counter.js';
 import chalk from 'chalk';
+import fs from 'fs';
+import path from 'path';
 
 // 获取本地时间戳
 function getTimestamp(): string {
@@ -42,6 +44,8 @@ export class ContextTester {
   private shouldStop = false;
   private totalTests = 0;  // 保存总测试数以供子方法使用
   private fatalError: Error | null = null;  // 存储致命错误信息
+  private verbose = false;
+  private logStream: fs.WriteStream | null = null;
 
   /**
    * 判断是否为非正常错误（应中断测试）
@@ -82,6 +86,41 @@ export class ContextTester {
   constructor(config: Config) {
     this.config = config;
     this.tokenCounter = new TokenCounter(config.provider, config.model);
+    this.verbose = config.verbose || false;
+
+    // 如果开启 verbose，创建日志文件
+    if (this.verbose) {
+      const logsDir = path.join(process.cwd(), 'logs');
+      if (!fs.existsSync(logsDir)) {
+        fs.mkdirSync(logsDir, { recursive: true });
+      }
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const logFile = path.join(logsDir, `verbose-${timestamp}.log`);
+      this.logStream = fs.createWriteStream(logFile, { flags: 'a' });
+      this.verboseLog(`=== Verbose log started at ${getTimestamp()} ===`);
+      this.verboseLog(`Provider: ${config.provider}, Model: ${config.model}, Method: ${config.testMethod}`);
+      console.error(chalk.cyan(`[Verbose] 日志文件: ${logFile}`));
+    }
+  }
+
+  /**
+   * 写入 verbose 日志到文件
+   */
+  private verboseLog(message: string): void {
+    if (this.logStream) {
+      const timestamp = getTimestamp();
+      this.logStream.write(`[${timestamp}] ${message}\n`);
+    }
+  }
+
+  /**
+   * 写入 HTTP 请求/响应日志
+   */
+  private verboseHttpLog(direction: 'REQUEST' | 'RESPONSE', data: any): void {
+    if (this.logStream) {
+      this.verboseLog(`--- HTTP ${direction} ---`);
+      this.verboseLog(JSON.stringify(data, null, 2));
+    }
   }
 
   /**
@@ -196,6 +235,15 @@ ${testText}
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 60000);
 
+        // 记录请求日志
+        const openaiRequest = {
+          model: this.config.model,
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 100
+        };
+        this.verboseLog(`[OpenAI] 测试 ${tokenCount} tokens`);
+        this.verboseHttpLog('REQUEST', openaiRequest);
+
         // 更新为等待状态
         this.emitProgress({
           phase: 'testing',
@@ -218,6 +266,10 @@ ${testText}
         });
 
         clearTimeout(timeoutId);
+
+        // 记录响应日志
+        this.verboseHttpLog('RESPONSE', response);
+
         log('info', `[${getTimestamp()}] OpenAI API 调用成功`);
         answer = response.choices[0].message.content || '';
       } else {
@@ -230,6 +282,15 @@ ${testText}
         // 设置 60 秒超时
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+        // 记录请求日志
+        const anthropicRequest = {
+          model: this.config.model,
+          max_tokens: 100,
+          messages: [{ role: 'user', content: prompt }]
+        };
+        this.verboseLog(`[Anthropic] 测试 ${tokenCount} tokens`);
+        this.verboseHttpLog('REQUEST', anthropicRequest);
 
         // 更新为等待状态
         this.emitProgress({
@@ -253,6 +314,10 @@ ${testText}
         });
 
         clearTimeout(timeoutId);
+
+        // 记录响应日志
+        this.verboseHttpLog('RESPONSE', response);
+
         log('info', `[${getTimestamp()}] Anthropic API 调用成功`);
         answer = response.content[0].type === 'text' ? response.content[0].text : '';
       }
@@ -589,5 +654,10 @@ ${testText}
   dispose(): void {
     this.tokenCounter.dispose();
     this.client = null;
+    if (this.logStream) {
+      this.verboseLog('=== Verbose log ended ===');
+      this.logStream.end();
+      this.logStream = null;
+    }
   }
 }

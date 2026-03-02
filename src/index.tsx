@@ -83,6 +83,10 @@ function parseArgs(): Partial<Config> {
           i++;
         }
         break;
+      case '--verbose':
+      case '-v':
+        config.verbose = true;
+        break;
       case '--help':
       case '-h':
         printHelp();
@@ -113,6 +117,7 @@ ${chalk.yellow('选项:')}
   --max-tokens      最大 token 数
   --tolerance       查找精度，仅 binary 模式 (默认: 1000)
   --step            测试步长，仅 step 模式 (默认: 5000)
+  -v, --verbose     输出详细日志到文件 (logs/verbose-{timestamp}.log)
   -h, --help        显示帮助信息
 
 ${chalk.yellow('示例:')}
@@ -406,7 +411,8 @@ async function main() {
         minTokens: cliConfig.minTokens || 1000,
         maxTokens: cliConfig.maxTokens || 128000,
         tolerance: cliConfig.tolerance || 1000,
-        step: cliConfig.step
+        step: cliConfig.step,
+        verbose: cliConfig.verbose
       };
 
       // 显示配置信息

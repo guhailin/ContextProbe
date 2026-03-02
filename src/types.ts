@@ -16,6 +16,7 @@ export interface Config {
   maxTokens: number;
   tolerance: number;
   step?: number;  // 仅 step 方法使用
+  verbose?: boolean;  // 开启详细日志到文件
 }
 
 // 测试结果
