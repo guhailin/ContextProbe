@@ -1,5 +1,6 @@
 node_modules/
 dist/
+.omc/
 *.log
 .env
 .DS_Store
