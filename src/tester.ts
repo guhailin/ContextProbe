@@ -13,7 +13,7 @@ import path from 'path';
 
 // 获取本地时间戳
 function getTimestamp(): string {
-  return new Date().toLocaleString('zh-CN', { hour12: false });
+  return new Date().toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' });
 }
 
 // 日志输出到 stderr，避免与 Ink 的 UI 冲突
@@ -119,7 +119,17 @@ export class ContextTester {
   private verboseHttpLog(direction: 'REQUEST' | 'RESPONSE', data: any): void {
     if (this.logStream) {
       this.verboseLog(`--- HTTP ${direction} ---`);
-      this.verboseLog(JSON.stringify(data, null, 2));
+
+      // 对很长的内容进行截断，只显示前后部分
+      const jsonStr = JSON.stringify(data, null, 2);
+      const maxLength = 2000;
+      if (jsonStr.length > maxLength) {
+        const half = Math.floor((maxLength - 50) / 2);
+        const truncated = jsonStr.slice(0, half) + '\n... [truncated] ...\n' + jsonStr.slice(-half);
+        this.verboseLog(truncated);
+      } else {
+        this.verboseLog(jsonStr);
+      }
     }
   }
 
@@ -346,6 +356,17 @@ ${testText}
       };
     } catch (error: any) {
       const elapsed = (Date.now() - startTime) / 1000;
+
+      // 记录失败信息到 verbose 日志
+      this.verboseLog(`[FAILED] 测试 ${tokenCount} tokens 失败`);
+      this.verboseLog(`错误信息: ${error.message || error.toString()}`);
+      if (error.response) {
+        this.verboseLog(`响应数据: ${JSON.stringify(error.response, null, 2)}`);
+      } else if (error.status) {
+        this.verboseLog(`HTTP 状态: ${error.status}`);
+        this.verboseLog(`响应内容: ${JSON.stringify(error, null, 2)}`);
+      }
+
       console.error(chalk.red(`[${getTimestamp()}] testTokenCount 出错 (耗时: ${elapsed.toFixed(2)}s):`), error);
 
       const errorMsg = error.message || error.toString();
