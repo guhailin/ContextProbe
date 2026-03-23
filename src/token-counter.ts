@@ -10,6 +10,9 @@ export class TokenCounter {
   private encoder: Tiktoken | null = null;
   private provider: Provider;
   private model: string;
+  // 修正系数：用于调整预估算法，使其更接近实际 API 返回值
+  private correctionFactor: number = 1.0;
+  private calibrationSamples: Array<{ estimated: number; actual: number }> = [];
 
   constructor(provider: Provider, model: string) {
     this.provider = provider;
@@ -60,16 +63,57 @@ export class TokenCounter {
 
   /**
    * 生成指定 token 数量的测试文本
+   * 使用粗略估算，不依赖精确的 token 计数
+   * 实际 token 数由 API 返回
    */
-  generateTestText(targetTokens: number): string {
-    const repeatUnit = '这是第12345句话。';
-    const avgCharsPerToken = 3; // 平均每个 token 约 3 个字符（中文）
-    const charsNeeded = targetTokens * avgCharsPerToken;
+  /**
+   * 生成指定 token 数量的测试文本
+   * @param targetTokens - 目标 token 数量
+   * @param uniqueId - 可选的唯一标识，用于生成不同的内容避免 prompt caching
+   */
+  generateTestText(targetTokens: number, uniqueId?: string | number): string {
+    // 使用 uniqueId 生成不同的基础文本，避免 prompt caching
+    const seed = uniqueId !== undefined ? `[${uniqueId}]` : '';
+    const repeatUnit = `这是第${seed}12345句话。`;
 
-    const repeatCount = Math.ceil(charsNeeded / repeatUnit.length);
-    const text = repeatUnit.repeat(repeatCount);
+    // 粗略估算：中文约 1.5 字符 = 1 token
+    // repeatUnit 约 8-12 个字符（取决于 seed），估算约 6-8 tokens
+    const estimatedUnitTokens = 6 + (seed.length > 0 ? 2 : 0);
 
-    return text.substring(0, charsNeeded);
+    // 应用修正系数来调整生成的文本量
+    const adjustedTarget = targetTokens / this.correctionFactor;
+    const repeatCount = Math.ceil(adjustedTarget / estimatedUnitTokens);
+
+    // 生成文本，不需要精确裁剪
+    return repeatUnit.repeat(repeatCount);
+  }
+
+  /**
+   * 使用 API 返回的实际 token 数来校准预估算法
+   * @param estimatedTokens - 我们预估的 token 数
+   * @param actualTokens - API 实际返回的 token 数
+   */
+  calibrate(estimatedTokens: number, actualTokens: number): void {
+    if (estimatedTokens <= 0 || actualTokens <= 0) return;
+
+    // 添加新的校准样本
+    this.calibrationSamples.push({ estimated: estimatedTokens, actual: actualTokens });
+
+    // 只保留最近的 10 个样本，避免过度拟合早期数据
+    if (this.calibrationSamples.length > 10) {
+      this.calibrationSamples.shift();
+    }
+
+    // 计算新的修正系数（实际值 / 预估值的平均值）
+    const ratios = this.calibrationSamples.map(s => s.actual / s.estimated);
+    this.correctionFactor = ratios.reduce((sum, r) => sum + r, 0) / ratios.length;
+  }
+
+  /**
+   * 获取当前的修正系数
+   */
+  getCorrectionFactor(): number {
+    return this.correctionFactor;
   }
 
   /**

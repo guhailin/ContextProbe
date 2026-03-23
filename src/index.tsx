@@ -1,7 +1,16 @@
+// 强制清屏 - 在任何代码执行前清除终端历史输出
+process.stdout.write('\x1Bc');
+process.stdout.write('\x1B[2J\x1B[3J\x1B[H');
+
 /**
  * 主入口文件
  * 交互式配置 + 测试流程
- * 支持命令行参数: --provider, --endpoint, --api-key, --model, --method, --min-tokens, --max-tokens, --tolerance, --step
+ * 支持命令行参数: --provider, --endpoint, --api-key, --model, --min-tokens, --max-tokens, --tolerance
+ *
+ * 默认配置:
+ * - minTokens: 10000 (起始探测值)
+ * - maxTokens: 1000000 (初始探索上限)
+ * - tolerance: 1000 (精度)
  */
 
 import React from 'react';
@@ -52,13 +61,6 @@ function parseArgs(): Partial<Config> {
           i++;
         }
         break;
-      case '--method':
-      case '-t':
-        if (nextArg && (nextArg === 'binary' || nextArg === 'step')) {
-          config.testMethod = nextArg;
-          i++;
-        }
-        break;
       case '--min-tokens':
         if (nextArg && !isNaN(Number(nextArg))) {
           config.minTokens = Number(nextArg);
@@ -74,12 +76,6 @@ function parseArgs(): Partial<Config> {
       case '--tolerance':
         if (nextArg && !isNaN(Number(nextArg))) {
           config.tolerance = Number(nextArg);
-          i++;
-        }
-        break;
-      case '--step':
-        if (nextArg && !isNaN(Number(nextArg))) {
-          config.step = Number(nextArg);
           i++;
         }
         break;
@@ -112,20 +108,20 @@ ${chalk.yellow('选项:')}
   -e, --endpoint    API 端点 (默认: 官方默认)
   -k, --api-key     API 密钥
   -m, --model       模型名称
-  -t, --method      测试方法 (binary | step)
-  --min-tokens      最小 token 数 (默认: 1000)
-  --max-tokens      最大 token 数
-  --tolerance       查找精度，仅 binary 模式 (默认: 1000)
-  --step            测试步长，仅 step 模式 (默认: 5000)
+  --min-tokens      最小 token 数 (默认: 10000，可选)
+  --max-tokens      最大 token 数 (默认: 1000000，可选)
+  --tolerance       查找精度 (默认: 1000，可选)
   -v, --verbose     输出详细日志到文件 (logs/verbose-{timestamp}.log)
   -h, --help        显示帮助信息
 
-${chalk.yellow('示例:')}
-  # 使用 OpenAI 测试
-  npm run dev -- -p openai -k YOUR_API_KEY -m gpt-4o -t binary --max-tokens 128000
+${chalk.gray('注意: 程序会自动探索模型的实际上下文上限')}
 
-  # 使用 Anthropic 测试
-  npm run dev -- -p anthropic -k YOUR_API_KEY -m claude-3-5-sonnet-20241022 -t step --max-tokens 200000 --step 10000
+${chalk.yellow('示例:')}
+  # 使用 OpenAI 测试 (自动探索上限)
+  npm run dev -- -p openai -k YOUR_API_KEY -m gpt-4o
+
+  # 使用 Anthropic 测试 (自动探索上限)
+  npm run dev -- -p anthropic -k YOUR_API_KEY -m claude-3-5-sonnet-20241022
 
   # 完全交互模式 (无参数)
   npm run dev
@@ -136,7 +132,7 @@ ${chalk.yellow('示例:')}
  * 检查是否提供了所有必需参数
  */
 function hasRequiredArgs(config: Partial<Config>): boolean {
-  return !!(config.provider && config.apiKey && config.model && config.testMethod);
+  return !!(config.provider && config.apiKey && config.model);
 }
 
 /**
@@ -145,7 +141,7 @@ function hasRequiredArgs(config: Partial<Config>): boolean {
 async function selectProvider(): Promise<Provider> {
   console.clear();
   console.log(chalk.cyan.bold('\n🚀 模型上下文长度测试工具\n'));
-  console.log(chalk.gray('步骤 1/4: 选择 API 提供商\n'));
+  console.log(chalk.gray('步骤 1/3: 选择 API 提供商\n'));
   console.log(chalk.gray('说明: 选择要测试的 API 服务商\n'));
   console.log(chalk.gray('  - OpenAI: 支持 GPT-4、GPT-3.5 等模型及兼容接口\n'));
   console.log(chalk.gray('  - Anthropic: 支持 Claude 3 系列模型\n'));
@@ -175,7 +171,7 @@ async function selectProvider(): Promise<Provider> {
 async function inputEndpoint(provider: Provider): Promise<string> {
   console.clear();
   console.log(chalk.cyan.bold('\n🚀 模型上下文长度测试工具\n'));
-  console.log(chalk.gray('步骤 2/4: 配置 API Endpoint\n'));
+  console.log(chalk.gray('步骤 2/3: 配置 API Endpoint\n'));
   console.log(chalk.gray('说明: API 服务的访问地址\n'));
   console.log(chalk.gray('  - 官方服务: 直接回车使用默认地址\n'));
   console.log(chalk.gray('  - 第三方服务: 输入自定义地址 (如 LocalAI、Ollama 等)\n'));
@@ -200,7 +196,7 @@ async function inputEndpoint(provider: Provider): Promise<string> {
 async function inputApiKey(): Promise<string> {
   console.clear();
   console.log(chalk.cyan.bold('\n🚀 模型上下文长度测试工具\n'));
-  console.log(chalk.gray('步骤 3/4: 输入 API Key\n'));
+  console.log(chalk.gray('步骤 3/3: 输入 API Key\n'));
   console.log(chalk.gray('说明: API 访问密钥，用于身份验证\n'));
   console.log(chalk.gray('  - 从 API 服务商控制台获取\n'));
   console.log(chalk.gray('  - 输入时会被隐藏显示为 * 号\n'));
@@ -214,18 +210,13 @@ async function inputApiKey(): Promise<string> {
 }
 
 /**
- * 步骤 4: 选择模型和测试方法
+ * 步骤 4: 选择模型 (简化版，自动探索上限)
  */
-async function configureTest(provider: Provider, endpoint: string): Promise<{
-  model: string;
-  testMethod: 'binary' | 'step';
-  minTokens: number;
-  maxTokens: number;
-  tolerance: number;
-}> {
+async function selectModel(provider: Provider, endpoint: string): Promise<string> {
   console.clear();
   console.log(chalk.cyan.bold('\n🚀 模型上下文长度测试工具\n'));
-  console.log(chalk.gray('步骤 4/4: 配置测试参数\n'));
+  console.log(chalk.gray('选择模型\n'));
+  console.log(chalk.yellow('💡 程序将自动探索模型的实际上下文上限\n'));
 
   // 检测是否为官方 endpoint
   const defaultEndpoint = provider === 'openai'
@@ -235,7 +226,6 @@ async function configureTest(provider: Provider, endpoint: string): Promise<{
   const isOfficialEndpoint = endpoint === defaultEndpoint;
 
   let model: string;
-  let maxContextLimit: number;
 
   if (isOfficialEndpoint) {
     // 使用预设模型列表
@@ -246,18 +236,17 @@ async function configureTest(provider: Provider, endpoint: string): Promise<{
       choices: models.map(m => ({
         name: `${chalk.yellow(m.name)} - ${chalk.gray(m.description)}`,
         value: m.value,
-        description: `最大上下文: ${m.maxContext.toLocaleString()} tokens`
+        description: `官方标称上下文: ${m.maxContext.toLocaleString()} tokens`
       }))
     }) as string;
 
     const selectedModel = models.find(m => m.value === model)!;
-    maxContextLimit = selectedModel.maxContext;
-
-    console.log(chalk.gray(`\n该模型的官方最大上下文: ${maxContextLimit.toLocaleString()} tokens\n`));
+    console.log(chalk.gray(`\n官方标称上下文: ${selectedModel.maxContext.toLocaleString()} tokens`));
+    console.log(chalk.gray('程序将自动探索实际可用上限\n'));
   } else {
     // 第三方服务：手动输入模型信息
     console.log(chalk.yellow('⚠️  检测到第三方 API 服务\n'));
-    console.log(chalk.gray('需要手动输入模型信息\n'));
+    console.log(chalk.gray('需要手动输入模型名称\n'));
 
     model = await input({
       message: '模型名称',
@@ -270,85 +259,11 @@ async function configureTest(provider: Provider, endpoint: string): Promise<{
       }
     });
 
-    const customMaxContextInput = await input({
-      message: '模型的最大上下文限制 (tokens)',
-      default: '10,000',
-      validate: (value) => {
-        const num = parseInt(value.replace(/,/g, ''), 10);
-        if (isNaN(num)) {
-          return '请输入有效的数字';
-        }
-        if (num < 512) {
-          return '最小值为 512';
-        }
-        if (num > 2000000) {
-          return '最大值为 2,000,000';
-        }
-        return true;
-      }
-    });
-
-    maxContextLimit = parseInt(customMaxContextInput.replace(/,/g, ''), 10) || 10000;
-
     console.log(chalk.gray(`\n模型: ${model}`));
-    console.log(chalk.gray(`最大上下文: ${maxContextLimit.toLocaleString()} tokens\n`));
+    console.log(chalk.gray('程序将自动探索实际可用上限\n'));
   }
 
-  // 选择测试方法
-  const testMethod = await select({
-    message: '选择测试方法',
-    choices: [
-      {
-        name: `${chalk.cyan('二分查找')} ${chalk.gray('(推荐)')}`,
-        value: 'binary',
-        description: '快速定位上下文限制，测试次数少'
-      },
-      {
-        name: chalk.yellow('逐步测试'),
-        value: 'step',
-        description: '详细的性能分析，测试次数多'
-      }
-    ]
-  }) as 'binary' | 'step';
-
-  // 配置参数
-  const minTokens = await number({
-    message: '最小 Token 数',
-    default: 1_000,
-    min: 100
-  });
-
-  const maxTokens = await number({
-    message: `最大 Token 数 (默认: ${maxContextLimit.toLocaleString()})`,
-    default: maxContextLimit,
-    min: minTokens || 1_000
-  });
-
-  let tolerance = 1_000;
-  let step = 5_000;
-
-  if (testMethod === 'binary') {
-    tolerance = await number({
-      message: '查找精度 (容差)',
-      default: 1_000,
-      min: 100
-    }) || 1_000;
-  } else {
-    step = await number({
-      message: '测试步长',
-      default: 5_000,
-      min: 100
-    }) || 5_000;
-  }
-
-  return {
-    model,
-    testMethod,
-    minTokens: minTokens || 1000,
-    maxTokens: maxTokens || maxContextLimit,
-    tolerance,
-    ...(testMethod === 'step' && { step })
-  };
+  return model;
 }
 
 /**
@@ -362,14 +277,9 @@ async function confirmConfig(config: Config): Promise<boolean> {
   console.log(chalk.white('提供商:    ') + chalk.yellow(config.provider.toUpperCase()));
   console.log(chalk.white('Endpoint:  ') + chalk.green(config.endpoint));
   console.log(chalk.white('模型:      ') + chalk.cyan(config.model));
-  console.log(chalk.white('测试方法:  ') + chalk.magenta(config.testMethod === 'binary' ? '二分查找' : '逐步测试'));
-  console.log(chalk.white('Token范围: ') + `${config.minTokens.toLocaleString()} - ${config.maxTokens.toLocaleString()}`);
-
-  if (config.testMethod === 'binary') {
-    console.log(chalk.white('查找精度:  ') + chalk.gray(`±${config.tolerance.toLocaleString()} tokens`));
-  } else {
-    console.log(chalk.white('测试步长:  ') + chalk.gray(`${(config as any).step?.toLocaleString() || 5000} tokens`));
-  }
+  console.log(chalk.white('起始值:    ') + chalk.gray(`${config.minTokens.toLocaleString()} tokens`));
+  console.log(chalk.white('查找精度:  ') + chalk.gray(`±${config.tolerance.toLocaleString()} tokens`));
+  console.log(chalk.yellow('\n💡 程序将自动探索模型的实际上下文上限'));
 
   console.log();
 
@@ -389,6 +299,9 @@ async function confirmConfig(config: Config): Promise<boolean> {
  * 主函数
  */
 async function main() {
+  // 清屏，清除之前的日志
+  console.clear();
+
   try {
     // 解析命令行参数
     const cliConfig = parseArgs();
@@ -407,11 +320,10 @@ async function main() {
         endpoint: cliConfig.endpoint || defaultEndpoint,
         apiKey: cliConfig.apiKey!,
         model: cliConfig.model!,
-        testMethod: cliConfig.testMethod!,
-        minTokens: cliConfig.minTokens || 1000,
-        maxTokens: cliConfig.maxTokens || 128000,
+        testMethod: 'exponential',
+        minTokens: cliConfig.minTokens || 10000,
+        maxTokens: cliConfig.maxTokens || 1000000,
         tolerance: cliConfig.tolerance || 1000,
-        step: cliConfig.step,
         verbose: cliConfig.verbose
       };
 
@@ -422,8 +334,10 @@ async function main() {
       console.log(chalk.white('提供商:    ') + chalk.yellow(config.provider.toUpperCase()));
       console.log(chalk.white('Endpoint:  ') + chalk.green(config.endpoint));
       console.log(chalk.white('模型:      ') + chalk.cyan(config.model));
-      console.log(chalk.white('测试方法:  ') + chalk.magenta(config.testMethod === 'binary' ? '二分查找' : '逐步测试'));
-      console.log(chalk.white('Token范围: ') + `${config.minTokens.toLocaleString()} - ${config.maxTokens.toLocaleString()}`);
+      console.log(chalk.white('起始值:    ') + chalk.gray(`${config.minTokens.toLocaleString()} tokens`));
+      console.log(chalk.white('查找精度:  ') + chalk.gray(`±${config.tolerance.toLocaleString()} tokens`));
+      console.log(chalk.yellow('\n💡 程序将自动探索模型的实际上下文上限'));
+
       console.log();
 
       // 确认开始
@@ -451,15 +365,19 @@ async function main() {
       // 步骤 3: 输入 API Key
       const apiKey = await inputApiKey();
 
-      // 步骤 4: 配置测试参数
-      const testConfig = await configureTest(provider, endpoint);
+      // 步骤 4: 选择模型
+      const model = await selectModel(provider, endpoint);
 
-      // 构建完整配置
+      // 构建完整配置（使用默认值）
       config = {
         provider,
         endpoint,
         apiKey,
-        ...testConfig
+        model,
+        testMethod: 'exponential',
+        minTokens: 10000,
+        maxTokens: 1000000,
+        tolerance: 1000
       };
 
       // 确认配置

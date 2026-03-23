@@ -11,7 +11,7 @@ export interface Config {
   endpoint: string;
   apiKey: string;
   model: string;
-  testMethod: 'binary' | 'step';
+  testMethod: 'exponential' | 'binary' | 'step';
   minTokens: number;
   maxTokens: number;
   tolerance: number;
@@ -26,6 +26,10 @@ export interface TestResult {
   errorMessage?: string;
   responseTime?: number;
   timestamp: Date;
+  // API 返回的实际 token 使用量
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
 }
 
 // 测试进度信息
@@ -41,6 +45,8 @@ export interface TestProgress {
   status?: 'sending' | 'waiting' | 'success' | 'failed' | 'retrying' | 'next_step';
   statusDetail?: string;  // 详细状态说明
   nextAction?: string;    // 下一步计划
+  maxSuccessfulInputTokens?: number;  // 最近最大的成功 input token
+  minFailedInputTokens?: number;  // 最小的失败 input token（用于动态调整范围上限）
 }
 
 // 模型预设

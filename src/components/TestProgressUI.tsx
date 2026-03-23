@@ -6,13 +6,14 @@
 import React, { useEffect, useState } from 'react';
 import { Box, Text } from 'ink';
 import Spinner from 'ink-spinner';
-import type { TestProgress } from '../types.js';
+import type { TestProgress, Config } from '../types.js';
 
 interface TestProgressUIProps {
   progress: TestProgress;
+  config: Config;
 }
 
-export const TestProgressUI: React.FC<TestProgressUIProps> = ({ progress }) => {
+export const TestProgressUI: React.FC<TestProgressUIProps> = ({ progress, config }) => {
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
@@ -57,23 +58,67 @@ export const TestProgressUI: React.FC<TestProgressUIProps> = ({ progress }) => {
     );
   };
 
+  // 格式化 token 数字为简化显示（1k, 10k, 1m 等）
+  const formatTokens = (tokens: number): string => {
+    if (tokens >= 1000000) {
+      return `${(tokens / 1000000).toFixed(tokens % 1000000 === 0 ? 0 : 1)}m`;
+    } else if (tokens >= 1000) {
+      return `${(tokens / 1000).toFixed(tokens % 1000 === 0 ? 0 : 1)}k`;
+    }
+    return tokens.toString();
+  };
+
   const renderStats = () => {
+    const maxSuccessTokens = progress.maxSuccessfulInputTokens;
+    const minTokens = config.minTokens;
+    // 使用失败的最小 token 数作为动态上限，如果没有失败记录则使用配置的最大值
+    const maxTokens = progress.minFailedInputTokens !== undefined
+      ? progress.minFailedInputTokens
+      : config.maxTokens;
+
+    // 计算进度条百分比
+    // 使用当前正在测试的 token 数或最大input token 数（取较大值）
+    const getProgressPercent = () => {
+      // 如果正在测试中，使用当前测试的 token 数
+      const currentTokens = progress.phase === 'testing' && progress.currentTokens > 0
+        ? Math.max(progress.currentTokens, maxSuccessTokens || 0)
+        : (maxSuccessTokens || 0);
+
+      if (currentTokens <= 0) return 0;
+      const range = maxTokens - minTokens;
+      const current = currentTokens - minTokens;
+      return Math.min(Math.max((current / range) * 100, 0), 100);
+    };
+
+    const percent = getProgressPercent();
+    const barWidth = 30;
+    const filled = Math.floor((percent / 100) * barWidth);
+    const empty = barWidth - filled;
+    const progressBar = '█'.repeat(filled) + '░'.repeat(empty);
+
     return (
       <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="gray" paddingX={1}>
         <Text bold color="cyan">测试统计</Text>
+        <Box marginTop={1} flexDirection="column">
+          <Box>
+            <Box width={20}>
+              <Text color="gray">最大input token:</Text>
+            </Box>
+            {maxSuccessTokens !== undefined && maxSuccessTokens !== null && maxSuccessTokens > 0 ? (
+              <Text bold color="green">{maxSuccessTokens.toLocaleString()} input</Text>
+            ) : (
+              <Text color="gray" italic>暂无成功记录</Text>
+            )}
+          </Box>
+          {maxSuccessTokens !== undefined && maxSuccessTokens !== null && maxSuccessTokens > 0 && (
+            <Box marginTop={1}>
+              <Text color="gray">{formatTokens(minTokens)} [</Text>
+              <Text color="green">{progressBar}</Text>
+              <Text color="gray">] {formatTokens(maxTokens)}</Text>
+            </Box>
+          )}
+        </Box>
         <Box marginTop={1}>
-          <Box width={20}>
-            <Text color="gray">当前 Tokens:</Text>
-          </Box>
-          <Text bold color="yellow">{currentTokens.toLocaleString()}</Text>
-        </Box>
-        <Box>
-          <Box width={20}>
-            <Text color="gray">测试进度:</Text>
-          </Box>
-          <Text>{totalTests === 0 ? '准备中...' : `${currentTest} / ${totalTests}`}</Text>
-        </Box>
-        <Box>
           <Box width={20}>
             <Text color="gray">已用时间:</Text>
           </Box>
@@ -120,9 +165,6 @@ export const TestProgressUI: React.FC<TestProgressUIProps> = ({ progress }) => {
         <Text> {message}</Text>
       </Box>
 
-      {/* 进度条 */}
-      {renderProgressBar()}
-
       {/* 统计信息 */}
       {renderStats()}
 
@@ -133,7 +175,13 @@ export const TestProgressUI: React.FC<TestProgressUIProps> = ({ progress }) => {
           <Text color={lastResult.success ? 'green' : 'red'}>
             {lastResult.success ? '✓ 成功' : '✗ 失败'}
           </Text>
-          <Text color="gray"> - {lastResult.tokenCount.toLocaleString()} tokens</Text>
+          {lastResult.inputTokens !== undefined && lastResult.inputTokens !== null && lastResult.inputTokens > 0 && (
+            <>
+              <Text color="gray"> - </Text>
+              <Text bold color="yellow">{lastResult.inputTokens.toLocaleString()}</Text>
+              <Text color="gray"> input</Text>
+            </>
+          )}
         </Box>
       )}
     </Box>

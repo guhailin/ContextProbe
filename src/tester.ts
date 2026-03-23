@@ -46,40 +46,38 @@ export class ContextTester {
   private fatalError: Error | null = null;  // 存储致命错误信息
   private verbose = false;
   private logStream: fs.WriteStream | null = null;
+  private maxSuccessfulInputTokens: number = 0;  // 跟踪最大成功 token 数
+  private minFailedInputTokens?: number;  // 跟踪最小失败 token 数
 
   /**
-   * 判断是否为非正常错误（应中断测试）
+   * 判断是否为需要重试的错误（超时、连接中断等网络问题）
    */
-  private isNonNormalError(error: any, errorMsg: string): boolean {
-    // 上下文超限错误 - 这是正常错误，应该继续测试
-    if (/context.*exceed|context.*limit|token.*exceed|maximum.*context|too long/i.test(errorMsg)) {
-      return false;
-    }
-    // 超时错误
+  private isRetryableError(error: any, errorMsg: string): boolean {
+    // 超时错误 - 需要重试
     if (error.name === 'AbortError' || errorMsg.includes('abort')) {
       return true;
     }
-    // 网络错误
-    if (/network|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|socket/i.test(errorMsg)) {
+    // 网络连接错误 - 需要重试
+    if (/network|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|socket|connection|connect/i.test(errorMsg)) {
       return true;
     }
-    // 认证错误
+    // 其他错误（包括 4xx、5xx 等）只要接口有响应，都不重试，视为触发上限
+    return false;
+  }
+
+  /**
+   * 判断是否为致命错误（应中断测试）
+   */
+  private isFatalError(error: any, errorMsg: string): boolean {
+    // 认证错误 - 致命错误，中断测试
     if (/401|authentication|unauthorized|api key|invalid key/i.test(errorMsg)) {
       return true;
     }
-    // 速率限制
+    // 速率限制 - 致命错误，中断测试
     if (/429|rate limit|too many requests/i.test(errorMsg)) {
       return true;
     }
-    // 服务器错误 (5xx)
-    if (/5\d{2}|internal error|server error|service unavailable/i.test(errorMsg)) {
-      return true;
-    }
-    // 客户端错误 (4xx，但排除上下文相关错误)
-    if (/4\d{2}/.test(errorMsg) && !/context|token|length|maximum|exceed|too long/i.test(errorMsg)) {
-      return true;
-    }
-    // 其他未知错误
+    // 其他都不是致命错误
     return false;
   }
 
@@ -241,9 +239,9 @@ ${testText}
         log('warn', `[${getTimestamp()}] 模型: ${this.config.model}`);
         log('debug', `[${getTimestamp()}] OpenAI 客户端已创建，开始创建 chat completion...`);
 
-        // 设置 60 秒超时
+        // 设置 300 秒（5分钟）超时
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 60000);
+        const timeoutId = setTimeout(() => controller.abort(), 300000);
 
         // 记录请求日志
         const openaiRequest = {
@@ -264,7 +262,7 @@ ${testText}
           message: `测试 ${tokenCount.toLocaleString()} tokens`,
           status: 'waiting',
           statusDetail: `请求已发送，等待 OpenAI API 响应...`,
-          nextAction: '最长等待 60 秒'
+          nextAction: '最长等待 300 秒'
         });
 
         const response = await openai.chat.completions.create({
@@ -289,9 +287,9 @@ ${testText}
         log('warn', `[${getTimestamp()}] 模型: ${this.config.model}`);
         log('debug', `[${getTimestamp()}] Anthropic 客户端已创建，开始创建 message...`);
 
-        // 设置 60 秒超时
+        // 设置 300 秒（5分钟）超时
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 60000);
+        const timeoutId = setTimeout(() => controller.abort(), 300000);
 
         // 记录请求日志
         const anthropicRequest = {
@@ -312,7 +310,7 @@ ${testText}
           message: `测试 ${tokenCount.toLocaleString()} tokens`,
           status: 'waiting',
           statusDetail: `请求已发送，等待 Anthropic API 响应...`,
-          nextAction: '最长等待 60 秒'
+          nextAction: '最长等待 300 秒'
         });
 
         const response = await anthropic.messages.create({
@@ -335,6 +333,9 @@ ${testText}
       const elapsed = (Date.now() - startTime) / 1000;
       log('info', `[${getTimestamp()}] testTokenCount 成功完成，耗时: ${elapsed.toFixed(2)}s`);
 
+      // 更新最大成功 token 数
+      this.maxSuccessfulInputTokens = Math.max(this.maxSuccessfulInputTokens, tokenCount);
+
       // 更新成功状态
       this.emitProgress({
         phase: 'testing',
@@ -345,7 +346,9 @@ ${testText}
         message: `测试 ${tokenCount.toLocaleString()} tokens 成功`,
         status: 'success',
         statusDetail: `✓ API 响应成功，耗时 ${elapsed.toFixed(2)} 秒`,
-        nextAction: '准备下一步测试'
+        nextAction: '准备下一步测试',
+        maxSuccessfulInputTokens: this.maxSuccessfulInputTokens,
+        minFailedInputTokens: this.minFailedInputTokens
       });
 
       return {
@@ -371,15 +374,9 @@ ${testText}
 
       const errorMsg = error.message || error.toString();
 
-      // 检测是否为非正常错误（应中断测试）
-      if (this.isNonNormalError(error, errorMsg)) {
-        this.fatalError = new Error(`API 非正常错误: ${errorMsg}`);
-        throw this.fatalError;
-      }
-
-      // 超时错误视为非正常错误
-      if (error.name === 'AbortError' || errorMsg.includes('abort')) {
-        this.fatalError = new Error(`请求超时: ${errorMsg}`);
+      // 检测是否为致命错误（应中断测试）
+      if (this.isFatalError(error, errorMsg)) {
+        this.fatalError = new Error(`API 致命错误: ${errorMsg}`);
 
         this.emitProgress({
           phase: 'error',
@@ -387,19 +384,23 @@ ${testText}
           totalTests: this.totalTests,
           currentTokens: tokenCount,
           results: [],
-          message: `测试中断 - 请求超时`,
+          message: `测试中断 - 致命错误`,
           status: 'failed',
-          statusDetail: `✗ 请求超时 (60s)，可能是网络问题或服务器无响应`,
+          statusDetail: `✗ ${errorMsg}`,
           nextAction: '测试已中断'
         });
 
-        console.error(chalk.red(`\n❌ 请求超时，测试中断\n`));
+        console.error(chalk.red(`\n❌ 致命错误，测试中断: ${errorMsg}\n`));
         throw this.fatalError;
       }
 
-      // 上下文超限错误是正常失败，继续测试
-      const isContextError = /context|token|length|maximum|exceed|too long/i.test(errorMsg);
-      const failReason = isContextError ? '超出上下文限制' : errorMsg;
+      // 所有其他错误（包括 4xx、5xx）都视为触发上限，继续测试
+      const failReason = '超出上下文限制';
+
+      // 更新最小失败 token 数
+      if (this.minFailedInputTokens === undefined || tokenCount < this.minFailedInputTokens) {
+        this.minFailedInputTokens = tokenCount;
+      }
 
       // 更新失败状态
       this.emitProgress({
@@ -411,7 +412,9 @@ ${testText}
         message: `测试 ${tokenCount.toLocaleString()} tokens 失败`,
         status: 'failed',
         statusDetail: `✗ 失败原因: ${failReason}`,
-        nextAction: isContextError ? '超出限制，将降低 token 数继续测试' : '遇到错误，将尝试继续'
+        nextAction: '超出限制，将降低 token 数继续测试',
+        maxSuccessfulInputTokens: this.maxSuccessfulInputTokens,
+        minFailedInputTokens: this.minFailedInputTokens
       });
 
       return {
@@ -465,13 +468,15 @@ ${testText}
       });
 
       log('warn', `[${getTimestamp()}] 调用 testTokenCount(${mid})...`);
-      const result = await this.testTokenCount(mid, testCount);
+      const result = await this.testTokenCountWithRetry(mid, testCount);
       log('info', `[${getTimestamp()}] testTokenCount(${mid}) 完成: success=${result.success}, responseTime=${result.responseTime}s`);
       results.push(result);
 
       if (result.success) {
         lastSuccessful = mid;
         left = mid;
+        // 更新全局最大成功 token 数
+        this.maxSuccessfulInputTokens = Math.max(this.maxSuccessfulInputTokens, mid);
         const nextMid = Math.floor((left + right) / 2);
         log('info', `[${getTimestamp()}] 测试成功，更新 left=${left}, right=${right}`);
         this.emitProgress({
@@ -565,12 +570,14 @@ ${testText}
       });
 
       log('warn', `[${getTimestamp()}] 调用 testTokenCount(${current})...`);
-      const result = await this.testTokenCount(current, testCount);
+      const result = await this.testTokenCountWithRetry(current, testCount);
       log('info', `[${getTimestamp()}] testTokenCount(${current}) 完成: success=${result.success}, responseTime=${result.responseTime}s`);
       results.push(result);
 
       if (result.success) {
         maxSuccessful = Math.max(maxSuccessful, current);
+        // 更新全局最大成功 token 数
+        this.maxSuccessfulInputTokens = Math.max(this.maxSuccessfulInputTokens, current);
         const nextTokens = current + step;
         log('info', `[${getTimestamp()}] 测试成功，更新 maxSuccessful=${maxSuccessful}`);
         this.emitProgress({
@@ -622,6 +629,244 @@ ${testText}
   }
 
   /**
+   * 带重试的测试方法
+   * 当遇到超时或网络连接错误时自动重试3次
+   */
+  private async testTokenCountWithRetry(tokenCount: number, testCount: number): Promise<TestResult> {
+    const maxRetries = 3;
+    let lastError: any;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await this.testTokenCount(tokenCount, testCount);
+      } catch (error: any) {
+        lastError = error;
+        const errorMsg = error.message || error.toString();
+
+        // 判断是否为重试able错误：超时或网络连接错误
+        const shouldRetry = this.isRetryableError(error, errorMsg);
+
+        if (!shouldRetry) {
+          throw error; // 非重试able错误，直接抛出
+        }
+
+        const errorType = error.name === 'AbortError' || errorMsg.includes('abort') ? '超时' : '连接错误';
+        if (attempt < maxRetries) {
+          log('warn', `[${getTimestamp()}] 测试 ${tokenCount} tokens 第 ${attempt} 次尝试${errorType}，准备重试...`);
+          await this.sleep(1000); // 重试前等待1秒
+        }
+      }
+    }
+
+    // 所有重试都失败了
+    log('error', `[${getTimestamp()}] 测试 ${tokenCount} tokens 重试 ${maxRetries} 次后仍然失败`);
+    throw lastError;
+  }
+
+  /**
+   * 执行指数搜索测试（指数探测 + 二分查找）
+   */
+  async runExponentialSearch(): Promise<number> {
+    log('info', `[${getTimestamp()}]runExponentialSearch() 开始`);
+
+    const { minTokens, maxTokens, tolerance } = this.config;
+    const results: TestResult[] = [];
+    let testCount = 0;
+
+    log('debug', `[${getTimestamp()}] 指数搜索配置: minTokens=${minTokens}, maxTokens=${maxTokens}, tolerance=${tolerance}`);
+
+    this.emitProgress({
+      phase: 'testing',
+      currentTest: testCount,
+      totalTests: 0,
+      currentTokens: 0,
+      results,
+      message: `开始指数探测 (起始: ${minTokens.toLocaleString()} tokens)`
+    });
+
+    // 阶段一：指数探测，快速找到失败区间
+    let current = minTokens;
+    let lastSuccessful = 0;
+    let failedAt: number | undefined;
+
+    while (current <= maxTokens && !this.shouldStop) {
+      testCount++;
+      log('warn', `\n[${getTimestamp()}] ========== [指数探测] 第 ${testCount} 次测试: current=${current} ==========`);
+
+      this.emitProgress({
+        phase: 'testing',
+        currentTest: testCount,
+        totalTests: 0,
+        currentTokens: current,
+        results,
+        message: `[指数探测] 测试 ${current.toLocaleString()} tokens...`
+      });
+
+      const result = await this.testTokenCountWithRetry(current, testCount);
+      results.push(result);
+
+      if (result.success) {
+        lastSuccessful = current;
+        this.maxSuccessfulInputTokens = Math.max(this.maxSuccessfulInputTokens, current);
+        const nextTokens = current * 2;
+        log('info', `[${getTimestamp()}] 指数探测成功，下一步: ${nextTokens}`);
+        this.emitProgress({
+          phase: 'testing',
+          currentTest: testCount,
+          totalTests: 0,
+          currentTokens: current,
+          lastResult: result,
+          results,
+          message: `✓ [指数探测] ${current.toLocaleString()} tokens 成功`,
+          status: 'next_step',
+          statusDetail: `✓ 成功，当前最大: ${lastSuccessful.toLocaleString()} tokens`,
+          nextAction: nextTokens <= maxTokens ? `下一步探测 ${nextTokens.toLocaleString()} tokens (x2)` : '已达上限，将进行二分查找',
+          maxSuccessfulInputTokens: this.maxSuccessfulInputTokens,
+          minFailedInputTokens: this.minFailedInputTokens
+        });
+
+        if (nextTokens > maxTokens) {
+          // 已达到配置上限，直接用上限值测试一次确认
+          if (current < maxTokens) {
+            current = maxTokens;
+          } else {
+            break;
+          }
+        } else {
+          current = nextTokens;
+        }
+      } else {
+        failedAt = current;
+        this.minFailedInputTokens = current;
+        log('error', `[${getTimestamp()}] 指数探测失败，失败点: ${failedAt}, 最后成功: ${lastSuccessful}`);
+        this.emitProgress({
+          phase: 'testing',
+          currentTest: testCount,
+          totalTests: 0,
+          currentTokens: current,
+          lastResult: result,
+          results,
+          message: `✗ [指数探测] ${current.toLocaleString()} tokens 失败`,
+          status: 'next_step',
+          statusDetail: `✗ 失败，将在 ${lastSuccessful.toLocaleString()} - ${failedAt.toLocaleString()} 之间进行二分查找`,
+          nextAction: '进入二分查找阶段',
+          maxSuccessfulInputTokens: this.maxSuccessfulInputTokens,
+          minFailedInputTokens: this.minFailedInputTokens
+        });
+        break;
+      }
+
+      await this.sleep(500);
+    }
+
+    // 如果没有找到失败点（全部成功），直接返回最大成功值
+    if (failedAt === undefined || lastSuccessful === 0) {
+      log('info', `[${getTimestamp()}] runExponentialSearch() 完成，未找到失败点，最终结果: ${lastSuccessful}`);
+      this.emitProgress({
+        phase: 'completed',
+        currentTest: testCount,
+        totalTests: testCount,
+        currentTokens: lastSuccessful,
+        results,
+        message: `测试完成！上下文限制: ${lastSuccessful.toLocaleString()} tokens (全部成功)`
+      });
+      return lastSuccessful;
+    }
+
+    // 阶段二：在 [lastSuccessful, failedAt) 区间进行二分查找
+    log('warn', `\n[${getTimestamp()}] ========== 进入二分查找阶段: [${lastSuccessful}, ${failedAt}) ==========`);
+
+    let left = lastSuccessful;
+    let right = failedAt;
+    const binaryStartTestCount = testCount;
+    const estimatedBinaryTests = Math.ceil(Math.log2((right - left) / tolerance));
+
+    this.emitProgress({
+      phase: 'testing',
+      currentTest: testCount,
+      totalTests: testCount + estimatedBinaryTests,
+      currentTokens: 0,
+      results,
+      message: `开始二分查找 (范围: ${left.toLocaleString()} - ${right.toLocaleString()} tokens)`
+    });
+
+    while (right - left > tolerance && !this.shouldStop) {
+      testCount++;
+      const mid = Math.floor((left + right) / 2);
+      log('warn', `[${getTimestamp()}] [二分查找] 第 ${testCount} 次测试: left=${left}, right=${right}, mid=${mid}`);
+
+      this.emitProgress({
+        phase: 'testing',
+        currentTest: testCount,
+        totalTests: binaryStartTestCount + estimatedBinaryTests,
+        currentTokens: mid,
+        results,
+        message: `[二分查找] 测试 ${mid.toLocaleString()} tokens...`
+      });
+
+      const result = await this.testTokenCountWithRetry(mid, testCount);
+      results.push(result);
+
+      if (result.success) {
+        lastSuccessful = mid;
+        left = mid;
+        this.maxSuccessfulInputTokens = Math.max(this.maxSuccessfulInputTokens, mid);
+        const nextMid = Math.floor((left + right) / 2);
+        log('info', `[${getTimestamp()}] 二分查找成功，更新 left=${left}, right=${right}`);
+        this.emitProgress({
+          phase: 'testing',
+          currentTest: testCount,
+          totalTests: binaryStartTestCount + estimatedBinaryTests,
+          currentTokens: mid,
+          lastResult: result,
+          results,
+          message: `✓ [二分] ${mid.toLocaleString()} tokens 成功`,
+          status: 'next_step',
+          statusDetail: `✓ 成功，当前最佳: ${left.toLocaleString()} tokens`,
+          nextAction: right - left > tolerance ? `下一步测试 ${nextMid.toLocaleString()} tokens` : '即将完成',
+          maxSuccessfulInputTokens: this.maxSuccessfulInputTokens,
+          minFailedInputTokens: this.minFailedInputTokens
+        });
+      } else {
+        right = mid;
+        this.minFailedInputTokens = mid;
+        const nextMid = Math.floor((left + right) / 2);
+        log('error', `[${getTimestamp()}] 二分查找失败，更新 right=${right}, left=${left}`);
+        this.emitProgress({
+          phase: 'testing',
+          currentTest: testCount,
+          totalTests: binaryStartTestCount + estimatedBinaryTests,
+          currentTokens: mid,
+          lastResult: result,
+          results,
+          message: `✗ [二分] ${mid.toLocaleString()} tokens 失败`,
+          status: 'next_step',
+          statusDetail: `✗ 失败，${result.errorMessage || '超出限制'}`,
+          nextAction: right - left > tolerance ? `下一步测试 ${nextMid.toLocaleString()} tokens` : '即将完成',
+          maxSuccessfulInputTokens: this.maxSuccessfulInputTokens,
+          minFailedInputTokens: this.minFailedInputTokens
+        });
+      }
+
+      await this.sleep(500);
+    }
+
+    const finalResult = lastSuccessful > 0 ? lastSuccessful : left;
+    log('info', `[${getTimestamp()}] runExponentialSearch() 完成，最终结果: ${finalResult}`);
+
+    this.emitProgress({
+      phase: 'completed',
+      currentTest: testCount,
+      totalTests: testCount,
+      currentTokens: finalResult,
+      results,
+      message: `测试完成！上下文限制: ${finalResult.toLocaleString()} tokens`
+    });
+
+    return finalResult;
+  }
+
+  /**
    * 开始测试
    */
   async start(): Promise<number> {
@@ -637,6 +882,9 @@ ${testText}
     if (this.config.testMethod === 'binary') {
       log('warn', `[${getTimestamp()}] 开始二分查找测试...`);
       result = await this.runBinarySearch();
+    } else if (this.config.testMethod === 'exponential') {
+      log('warn', `[${getTimestamp()}] 开始指数搜索测试...`);
+      result = await this.runExponentialSearch();
     } else {
       log('warn', `[${getTimestamp()}] 开始逐步测试...`);
       result = await this.runStepTest();
@@ -658,7 +906,12 @@ ${testText}
    */
   private emitProgress(progress: TestProgress): void {
     if (this.progressCallback) {
-      this.progressCallback(progress);
+      // 自动补充 maxSuccessfulInputTokens 和 minFailedInputTokens
+      this.progressCallback({
+        ...progress,
+        maxSuccessfulInputTokens: this.maxSuccessfulInputTokens,
+        minFailedInputTokens: this.minFailedInputTokens
+      });
     }
   }
 
