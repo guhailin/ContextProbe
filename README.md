@@ -1,22 +1,24 @@
-# 模型上下文长度测试工具 (TUI 版本)
+# ContextProbe
 
-🚀 一个现代化的终端交互式工具，用于测试大语言模型的最大上下文长度限制。
+🚀 一个现代化的终端交互式工具，用于精确探测大语言模型的最大上下文长度限制。
 
 ## ✨ 特性
 
 - 🎨 **美观的 TUI 界面** - 基于 Ink (React for CLI) 的现代化终端 UI
 - 🔧 **交互式配置** - 分步引导配置，无需手动编辑配置文件
 - 🔌 **多提供商支持** - 支持 OpenAI 和 Anthropic API
-- 🎯 **智能测试算法** - 二分查找快速定位，逐步测试详细分析
+- 🎯 **智能测试算法** - 指数探测 + 二分查找，快速精确定位上下文限制
 - 📊 **实时进度显示** - 进度条、统计信息、响应时间一目了然
 - 🔐 **安全输入** - API Key 使用密码模式输入，保护隐私
 - ⚡ **精确 Token 计数** - 使用 tiktoken 进行准确的 token 统计
+- 📝 **详细日志** - 支持 `--verbose` 模式记录完整 HTTP 请求日志
 
 ## 📦 安装
 
 ```bash
-# 克隆或进入项目目录
-cd ts-tui
+# 克隆项目
+git clone https://github.com/guhailin/ContextProbe.git
+cd ContextProbe
 
 # 安装依赖
 npm install
@@ -42,7 +44,7 @@ npm run dev
 #### 步骤 1: 选择 API 提供商
 
 ```
-🚀 模型上下文长度测试工具
+🚀 ContextProbe - 模型上下文长度测试工具
 
 步骤 1/4: 选择 API 提供商
 
@@ -84,15 +86,12 @@ npm run dev
   GPT-4o (128K) - 最新多模态模型
   GPT-3.5 Turbo (16K) - 经济实惠
 
-? 选择测试方法
-  二分查找 (推荐)
-  逐步测试
-
 该模型的官方最大上下文: 128,000 tokens
 
-? 最小 Token 数 (1000)
-? 最大 Token 数 (128000)
+? 最小 Token 数 (10000)
+? 最大 Token 数 (1000000)
 ? 查找精度 (1000)
+? 开启详细日志记录到文件 (y/N)
 ```
 
 #### 确认配置
@@ -103,9 +102,10 @@ npm run dev
 提供商:    OPENAI
 Endpoint:  https://api.openai.com/v1
 模型:      gpt-4-turbo
-测试方法:  二分查找
-Token范围: 1,000 - 128,000
+测试方法:  指数探测 + 二分查找
+Token范围: 10,000 - 1,000,000
 查找精度:  ±1,000 tokens
+详细日志:  否
 
 ? 确认开始测试？
   ✓ 开始测试
@@ -121,8 +121,8 @@ Token范围: 1,000 - 128,000
 │                                       │
 │ 提供商:      OPENAI                   │
 │ 模型:        gpt-4-turbo              │
-│ 测试方法:    二分查找                  │
-│ Token 范围:  1,000 - 128,000          │
+│ 测试方法:    指数探测 + 二分查找       │
+│ Token 范围:  10,000 - 1,000,000       │
 ╰──────────────────────────────────────╯
 
  测试进度
@@ -142,37 +142,31 @@ Token范围: 1,000 - 128,000
 上次测试: ✓ 成功 - 32,000 tokens
 ```
 
-## 🧪 测试方法对比
+## 🧪 测试算法
 
-### 二分查找 (推荐)
+### 指数探测 + 二分查找
+
+ContextProbe 使用优化的两步算法来快速精确定位上下文限制：
+
+**第一步：指数探测**
+- 从 `minTokens` 开始，按指数增长（×2）快速探测
+- 例如：10K → 20K → 40K → 80K → 160K → ...
+- 一旦发现失败的 token 数，确定搜索区间
+
+**第二步：二分查找**
+- 在探测确定的区间内进行二分查找
+- 逐步缩小范围，直到达到指定精度（`tolerance`）
 
 **优势**:
-- ⚡ 快速：只需 8-12 次测试即可定位
-- 💰 节省成本：最少 API 调用
-- 🎯 高效：对数时间复杂度 O(log n)
-
-**适用场景**:
-- 快速了解模型限制
-- 成本敏感场景
-- 首次测试某模型
-
-### 逐步测试
-
-**优势**:
-- 📊 详细：能看到不同长度下的性能
-- 📈 全面：了解响应时间变化趋势
-- 🎨 直观：完整的测试曲线
-
-**适用场景**:
-- 性能分析研究
-- 模型行为观察
-- 需要详细数据
+- ⚡ 快速：避免从 0 开始逐个测试
+- 💰 节省成本：相比纯二分查找，指数探测更快定位失败区间
+- 🎯 高效：结合两种算法的优点
 
 ## ⚙️ 高级配置
 
 ### 命令行参数
 
-除了交互式配置，你也可以直接通过命令行传递参数，无需每次手动输入：
+除了交互式配置，你也可以直接通过命令行传递参数：
 
 ```bash
 # 查看帮助
@@ -187,24 +181,26 @@ npm run dev -- --help
 | `--endpoint` | `-e` | API 端点 | 官方默认 |
 | `--api-key` | `-k` | API 密钥 | 交互式输入 |
 | `--model` | `-m` | 模型名称 | 交互式选择 |
-| `--method` | `-t` | 测试方法 (binary \| step) | 交互式选择 |
-| `--min-tokens` | - | 最小 token 数 | 1000 |
-| `--max-tokens` | - | 最大 token 数 | 128000 |
-| `--tolerance` | - | 查找精度 (仅 binary 模式) | 1000 |
-| `--step` | - | 测试步长 (仅 step 模式) | 5000 |
+| `--min-tokens` | - | 最小 token 数 | 10000 |
+| `--max-tokens` | - | 最大 token 数 | 1000000 |
+| `--tolerance` | - | 查找精度 | 1000 |
+| `--verbose` | `-v` | 开启详细 HTTP 日志 | false |
 | `--help` | `-h` | 显示帮助信息 | - |
 
 #### 使用示例
 
 ```bash
-# OpenAI 二分查找测试
-npm run dev -- -p openai -k YOUR_API_KEY -m gpt-4o -t binary --max-tokens 128000
+# OpenAI 测试
+npm run dev -- -p openai -k YOUR_API_KEY -m gpt-4o
 
-# Anthropic 逐步测试
-npm run dev -- -p anthropic -k YOUR_API_KEY -m claude-3-5-sonnet-20241022 -t step --max-tokens 200000 --step 10000
+# Anthropic 测试
+npm run dev -- -p anthropic -k YOUR_API_KEY -m claude-3-5-sonnet-20241022
 
 # 使用第三方兼容服务 (如 Ollama)
-npm run dev -- -p openai -k ollama -m llama3 -t binary -e http://localhost:11434/v1 --max-tokens 32768
+npm run dev -- -p openai -k ollama -m llama3 -e http://localhost:11434/v1 --max-tokens 32768
+
+# 开启详细日志
+npm run dev -- -p openai -k YOUR_API_KEY -m gpt-4-turbo --verbose
 
 # 仅传递必需参数，其他使用默认值
 npm run dev -- -p openai -k YOUR_API_KEY -m gpt-4-turbo
@@ -213,7 +209,7 @@ npm run dev -- -p openai -k YOUR_API_KEY -m gpt-4-turbo
 npm run dev
 ```
 
-💡 **提示**: 传入所有必需参数 (`-p`, `-k`, `-m`, `-t`) 时会跳过交互式配置流程，但仍会显示配置确认提示。
+💡 **提示**: 传入所有必需参数 (`-p`, `-k`, `-m`) 时会跳过交互式配置流程，但仍会显示配置确认提示。
 
 ### 自定义 Endpoint
 
@@ -233,14 +229,19 @@ npm run dev
 ### 调整测试参数
 
 ```typescript
-// 二分查找参数
-最小 Token 数: 1000      // 开始测试的大小
-最大 Token 数: 128000    // 上限阈值
+// 测试参数
+最小 Token 数: 10000     // 开始测试的大小
+最大 Token 数: 1000000   // 初始探索上限（指数探测会自动扩展）
 查找精度: 1000           // 允许的误差范围
-
-// 逐步测试参数
-测试步长: 5000           // 每次增加的 token 数
 ```
+
+### 详细日志模式
+
+使用 `--verbose` 参数开启详细日志记录：
+
+- 完整 HTTP 请求和响应详情
+- 自动保存到 `logs/` 目录下的时间戳文件
+- 有助于调试 API 问题
 
 ## 📊 示例输出
 
@@ -270,15 +271,17 @@ npm run dev
 ## 📁 项目结构
 
 ```
-ts-tui/
+ContextProbe/
 ├── src/
-│   ├── index.ts              # 主入口
-│   ├── types.ts              # 类型定义
-│   ├── tester.ts             # 核心测试逻辑
-│   ├── token-counter.ts      # Token 计数器
+│   ├── index.tsx              # 主入口
+│   ├── types.ts               # 类型定义
+│   ├── tester.ts              # 核心测试逻辑
+│   ├── token-counter.ts       # Token 计数器
 │   └── components/
-│       ├── TestProgress.tsx  # 进度显示组件
-│       └── TestRunner.tsx    # 测试运行器组件
+│       ├── TestRunner.tsx     # 测试运行器组件
+│       ├── TestProgressUI.tsx # 进度显示组件
+│       └── TestReport.tsx     # 测试报告组件
+├── logs/                      # 日志文件目录
 ├── package.json
 ├── tsconfig.json
 └── README.md
@@ -300,10 +303,10 @@ ts-tui/
 
 ## ⚠️ 注意事项
 
-1. **API 成本**: 测试会产生实际的 API 调用费用
+1. **API 成本**: 测试会产生实际的 API 调用费用，建议使用指数探测减少调用次数
 2. **速率限制**: 注意各提供商的速率限制
 3. **网络稳定**: 确保网络连接稳定
-4. **Token 精度**: 中文 token 计数使用估算方法
+4. **Token 精度**: 中文 token 计数使用估算方法（失败时回退到 ~1.5 字符/token）
 
 ## 🐛 故障排除
 
@@ -327,7 +330,7 @@ npm install
 
 - 按 `Ctrl+C` 终止当前测试
 - 检查 API 响应是否超时
-- 查看错误日志
+- 使用 `--verbose` 查看详细日志
 
 ## 📝 开发
 
